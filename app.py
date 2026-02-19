@@ -30,7 +30,7 @@ def init_db():
     c.execute("SELECT * FROM users WHERE username='Steve'")
     if not c.fetchone():
         c.execute("INSERT INTO users (username, password) VALUES (?, ?)", 
-                  ("Aaron", "Skibidi Ohio Rizz"))
+                  ("Steve", "Steve123"))
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS transactions (
@@ -88,6 +88,29 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for('login'))
+
+# Sign up
+@app.route('/register', methods=['GET','POST'])
+def register():
+    error = None
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+
+        conn = sqlite3.connect("database.db")
+        c = conn.cursor()
+
+        try:
+            c.execute("INSERT INTO users (username, password) VALUES (?,?)",
+                      (username, password))
+            conn.commit()
+            conn.close()
+            return redirect(url_for('login'))
+        except:
+            error = "Username already exists."
+            conn.close()
+
+    return render_template("register.html", error=error)
 
 # dash
 @app.route('/dashboard')
