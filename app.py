@@ -5,15 +5,15 @@ from werkzeug.utils import secure_filename
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from io import BytesIO
-from functools import wraps
 
 # looks for folders "templates"(HTML) and "static"(CSS) by default in the ARCANE folder
 # basically just creates a path to folders or files within its current directory (for security reasons)
-app = Flask(__name__) # tells Flask "look for my files in the sma efolder this program is located in"
+app = Flask(__name__) # tells Flask "look for my files in the same folder this program is located in"
 app.secret_key = os.urandom(24) # the secret key signs your userID, and turns it into a long gibberish string (the cookie; 24 chars)
 
 # Upload folder
@@ -62,12 +62,13 @@ def init_db():
 
 init_db()
 
-def login_required(f):
-    @wraps(f)
+def login_required(func):
+    from functools import wraps
+    @wraps(func)
     def wrapper(*args, **kwargs):
         if 'userID' not in session:
             return redirect(url_for('login'))
-        return f(*args, **kwargs)
+        return func(*args, **kwargs)
     return wrapper
 
 
@@ -76,7 +77,7 @@ def login_required(f):
 def login():
     error = None
     if request.method == 'POST':
-        # retrives/fetchs the data they "POST"ed or submitted after clicking submit
+        # retrieves/fetchs the data they "POST"ed or submitted after clicking submit
         # request.form is a dictionary containing POST form data
         username = request.form['username'] 
         password = request.form['password'] # In real world apps, you dont store passwords in real text, you use a hash via something like Werkzeug
@@ -93,17 +94,17 @@ def login():
 
         if user: # checks if the user exists in the database/has an account
             session['userID'] = user[0] # session is initiated via imports from Flask
-            # by nature the internet is stateless, meaning when you clikc a link to go to a diff page, the server completly forgets who you are, 
+            # by nature the internet is stateless, meaning when you click a link to go to a diff page, the server completly forgets who you are, 
             # session solves this by creating a key (stored as a cookie in their browser)
             return redirect(url_for('dashboard'))
         else:
             error = "Incorrect Username or Password"
             # if user == False, error is no longer None and is then returned/served down below
-    return render_template('login.html', error=error) # elif GET, serves the empty login form: safe, idempotent ()
+    return render_template('login.html', error=error) # elif GET, serves the empty login form: safe, idempotent (API request that produces the same result regardless of how many times it is executed: deleting user 1 mutiple times)
     # if the error else blokc was activated, error will no longer be None, meaning the kwarg, error, will be displayed as "Incorrect U..."
 
 # REGISTER
-@app.route('/register', methods=['GET','POST'])
+@app.route('/register', methods=['GET','POST']) 
 def register():
     error = None
     if request.method == 'POST':
@@ -125,7 +126,7 @@ def register():
     return render_template("register.html", error=error)
 
 # LOGOUT
-@app.route('/logout')
+@app.route('/logout') # tells Flask, whenever someone visits this URL, run this function
 def logout():
     session.clear() # removes the userID from the session dict
     # each browser (user) has thier own personal session, 
@@ -250,33 +251,53 @@ def view_report():
     FROM Transactions 
     WHERE type='Expense' AND userID=? 
     GROUP BY category 
-    """, (session['userID'],)) # allrows with the same category are grouped together, and the amounts are summed
+    """, (session['userID'],)) # all rows with the same category are grouped together, and the amounts are summed
     data = c.fetchall()
     conn.close()
 
     categories = [d[0] for d in data]
     amounts = [d[1] for d in data]
 
+    # BAR CHART
     plt.figure() # creates a figure
     plt.bar(categories, amounts) # creates a bar graph
     plt.title("Monthly Expenses") # adds the title
+    bar_buffer = BytesIO()
+    plt.savefig(bar_buffer, format='png')
+    plt.close()
+    bar_buffer.seek(0)
 
-    img_buffer = BytesIO() # creates an in-memory file-like object
-    plt.savefig(img_buffer, format='png') # saves the chart into the memory file as a png
-    plt.close() # closes the figure to free memory
-    img_buffer.seek(0) # clears the buffer? (idk)
+    # PIE CHART
+    colors = plt.cm.tab20(np.linspace(0, 1, len(categories)))
+    plt.figure()
+    plt.pie(amounts, labels=categories, colors=colors, autopct="%1.1f%%")
+    plt.title("Expense Breakdown")
+    pie_buffer = BytesIO()
+    plt.savefig(pie_buffer, format='png')
+    plt.close()
+    pie_buffer.seek(0)
 
-    pdf_buffer = BytesIO() # another in-memory file but for the pdf this time
-    doc = SimpleDocTemplate(pdf_buffer) # creates a pdf document for the pdf_buffer
+    # PDF BUILDER
+    pdf_buffer = BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer)
     elements = []
     styles = getSampleStyleSheet()
+
     elements.append(Paragraph("Monthly Expense Report", styles['Heading1']))
     elements.append(Spacer(1, 0.5 * inch))
-    elements.append(Image(img_buffer, width=400, height=300))
+
+    # Add bar chart
+    elements.append(Image(bar_buffer, width=400, height=300))
+    elements.append(Spacer(1, 0.5 * inch))
+
+    # Add pie chart
+    elements.append(Image(pie_buffer, width=400, height=300))
+
     doc.build(elements)
     pdf_buffer.seek(0)
 
     return send_file(pdf_buffer, as_attachment=False, download_name="report.pdf")
+
 
 # RUN APP
 if __name__ == '__main__':
