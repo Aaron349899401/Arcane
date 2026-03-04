@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, send_file, send_from_directory
+from flask import Flask, flash, render_template, request, redirect, url_for, session, send_file, send_from_directory
 import sqlite3
 import os
 from werkzeug.utils import secure_filename
@@ -231,7 +231,26 @@ def add():
     if request.method == 'POST':
         ttype = request.form['type']
         category = request.form['category']
-        amount = float(request.form['amount'])
+        amount = request.form['amount']
+
+        # Validate amount is numeric
+        try:
+            amount = float(amount)
+        except ValueError:
+            flash("Amount must be a number.", "danger")
+            return redirect("/add")
+
+        # Validate amount is positive
+        if amount <= 0:
+            flash("Amount must be greater than zero.", "danger")
+            return redirect("/add")
+
+        # Validate category is not empty
+        if not category.strip():
+            flash("Category cannot be empty.", "danger")
+            return redirect("/add")
+
+        # now we can save the transaction data
         userID = session['userID']
         conn = sqlite3.connect("database.db")
         c = conn.cursor()
@@ -241,10 +260,9 @@ def add():
             INSERT INTO Transactions (type, category, amount, date, userID)
             VALUES (?, ?, ?, ?, ?)
         """, (ttype, category, amount, today, userID))
-
+        amount = request.form.get("amount")
         conn.commit()
         conn.close()
-
         return redirect(url_for('dashboard'))
 
     return render_template('add.html')
@@ -398,32 +416,56 @@ def view_report():
     return send_file(pdf_buffer, as_attachment=False, download_name="report.pdf")
 
 # SETTINGs
-@app.route('/settings', methods=['GET', 'POST'])
+@app.route('/settings', methods=['POST'])
 @login_required
 def settings():
     userID = session['userID']
+
+    # Always clear the flag at the start of a new request
+    session.pop("open_settings_modal", None)
+
+    new_max = request.form.get('max_percentage')
+    monthly_budget_goal = request.form.get('monthly_budget_goal')
+
+    # Validate max percentage
+    try:
+        new_max = float(new_max)
+    except (ValueError, TypeError):
+        session["open_settings_modal"] = True
+        flash("Max percentage must be a number.", "danger")
+        return redirect("/dashboard")
+
+    if new_max <= 0 or new_max > 100:
+        session["open_settings_modal"] = True
+        flash("Max percentage must be between 1 and 100.", "danger")
+        return redirect("/dashboard")
+
+    # Validate monthly budget goal
+    try:
+        monthly_budget_goal = float(monthly_budget_goal)
+    except (ValueError, TypeError):
+        session["open_settings_modal"] = True
+        flash("Monthly budget goal must be a number.", "danger")
+        return redirect("/dashboard")
+
+    if monthly_budget_goal <= 0:
+        session["open_settings_modal"] = True
+        flash("Monthly budget goal must be greater than zero.", "danger")
+        return redirect("/dashboard")
+
+    # Save settings
     conn = sqlite3.connect("database.db")
     c = conn.cursor()
-
-    if request.method == 'POST':
-        new_max = float(request.form['max_percentage'])
-        monthly_budget_goal = float(request.form['monthly_budget_goal'])
-
-        c.execute("""
-            UPDATE Settings 
-            SET max_percentage=?, monthly_budget_goal=? 
-            WHERE userID=?
-        """, (new_max, monthly_budget_goal, userID))
-
-        conn.commit()
-        conn.close()
-        return redirect(url_for('dashboard'))
-
-    c.execute("SELECT max_percentage, monthly_budget_goal FROM Settings WHERE userID=?", (userID,))
-    row = c.fetchone()
+    c.execute("""
+        UPDATE Settings
+        SET max_percentage=?, monthly_budget_goal=?
+        WHERE userID=?
+    """, (new_max, monthly_budget_goal, userID))
+    conn.commit()
     conn.close()
 
-    return redirect(url_for('dashboard'))
+    flash("Settings updated!", "success")
+    return redirect("/dashboard")
 
 # RUN APP
 if __name__ == '__main__': # name is a built in python var that is automatically set to the string "__main__" when its is run
