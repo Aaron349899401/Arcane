@@ -19,7 +19,17 @@
                     <div class="card shadow-sm">
                         <div class="card-body d-flex justify-content-between align-items-center">
                             <span>{{ file[0] }}</span>
-                            <a href="{{ url_for('uploaded_file', filename=file[0]) }}" class="btn btn-outline-primary btn-sm" target="_blank">View / Download</a>
+
+                            <div class="d-flex gap-2">
+                                <a href="{{ url_for('uploaded_file', filename=file[0]) }}" 
+                                class="btn btn-outline-primary btn-sm" target="_blank">
+                                View / Download
+                                </a>
+
+                                <form action="{{ url_for('delete_file', filename=file[0]) }}" method="POST" onsubmit="return confirm('Delete this file?');">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+                                </form>
+                            </div>
                         </div>
                     </div>
                 </div>

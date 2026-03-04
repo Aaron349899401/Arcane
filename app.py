@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, s
 import sqlite3
 import os
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -10,6 +11,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from io import BytesIO
+from datetime import date
 
 # looks for folders "templates"(HTML) and "static"(CSS) by default in the ARCANE folder
 # basically just creates a path to folders or files within its current directory (for security reasons)
@@ -42,6 +44,7 @@ def init_db():
             type TEXT NOT NULL,
             category TEXT NOT NULL,
             amount REAL NOT NULL,
+            date DATE NOT NULL,
             userID INTEGER,
             FOREIGN KEY (userID) REFERENCES Users(userID)
         )
@@ -55,6 +58,15 @@ def init_db():
             userID INTEGER,
             FOREIGN KEY (userID) REFERENCES Users(userID)
         )
+    """)
+
+    # Settings table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS Settings (
+            userID INTEGER PRIMARY KEY,
+            max_percentage REAL DEFAULT 30,
+            monthly_budget_goal INTEGER NOT NULL
+        );
     """)
 
     conn.commit()
@@ -81,18 +93,17 @@ def login():
         # request.form is a dictionary containing POST form data
         username = request.form['username'] 
         password = request.form['password'] # In real world apps, you dont store passwords in real text, you use a hash via something like Werkzeug
-
         conn = sqlite3.connect("database.db")
         c = conn.cursor() # cursor object: what actually executes SQL commands
         # compares the username and password from the submission with that of the database
-        c.execute("SELECT userID FROM Users WHERE username=? AND password=?", (username, password)) # SQLite returns rows as tuples by default
+        c.execute("SELECT userID, password FROM Users WHERE username=?", (username,)) # SQLite returns rows as tuples by default
         # gets the first matching userID from the query executed above; the ? are replaced by the tuple on the right using Flask (?=placeholder)
         # the ? prevents SQL injection, if a hacker puts "admin" or "1"="1" as their username, it will always evaluate to True, the ? treats every inputs as plain text not commands
         # there will only ever be one row, or none since usernames and passwords are all unique
         user = c.fetchone() # user is either a tuple holding one userID or it is None (no username/password matches the POST in the database.db)
         conn.close() # frees resources for other tasks
 
-        if user: # checks if the user exists in the database/has an account
+        if user and check_password_hash(user[1], password): # checks if the user exists in the database/has an account
             session['userID'] = user[0] # session is initiated via imports from Flask
             # by nature the internet is stateless, meaning when you click a link to go to a diff page, the server completly forgets who you are, 
             # session solves this by creating a key (stored as a cookie in their browser)
@@ -110,17 +121,17 @@ def register():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
-
+        hashed_pw = generate_password_hash(password)
         conn = sqlite3.connect("database.db")
         c = conn.cursor()
         try: # this try except block is just to see if the username already exists in the databse.db
             # if the username is unique, the insertion will succeed, if not then it will raise an IntegrityError
-            c.execute("INSERT INTO Users (username, password) VALUES (?,?)", (username, password))
+            c.execute("INSERT INTO Users (username, password) VALUES (?,?)", (username, hashed_pw))
             conn.commit() # saves the changes to the database, without this, the new user wouldn't actually be remembred
             conn.close() # always make sure to free up memory by closing the connection
             return redirect(url_for('login'))
         except sqlite3.IntegrityError:
-            error = "YOU STINKY BUM. Pick a different username."
+            error = "Username or Password is already in use"
             conn.close()
 
     return render_template("register.html", error=error)
@@ -137,28 +148,100 @@ def logout():
 
 # DASHBOARD
 @app.route('/dashboard')
-@login_required # only logged in users can open the dashboard (checks if user is in session before running the dashboard func)
+@login_required
 def dashboard():
     conn = sqlite3.connect("database.db")
     c = conn.cursor()
-    c.execute("SELECT * FROM Transactions WHERE userID=?", (session['userID'],)) # Selects multiple rows where the userID is the one in session
+
+    # All transactions
+    c.execute("SELECT * FROM Transactions WHERE userID=?", (session["userID"],))
     data = c.fetchall()
+
+    # Totals
+    c.execute("SELECT SUM(amount) FROM Transactions WHERE type='Income' AND userID=?", (session['userID'],))
+    total_income = c.fetchone()[0] or 0
+
+    c.execute("SELECT SUM(amount) FROM Transactions WHERE type='Expense' AND userID=?", (session['userID'],))
+    total_expense = c.fetchone()[0] or 0
+
+    # Category breakdown
+    c.execute("""
+        SELECT category, SUM(amount) 
+        FROM Transactions 
+        WHERE type='Expense' AND userID=?
+        GROUP BY category
+    """, (session['userID'],))
+    category_expenses = c.fetchall()
+
+    percentages = []
+    for category, amount in category_expenses:
+        pct = (amount / total_expense) * 100 if total_expense > 0 else 0
+        percentages.append((category, amount, pct))
+
+    # Get settings
+    c.execute("SELECT max_percentage, monthly_budget_goal FROM Settings WHERE userID=?", (session['userID'],))
+    row = c.fetchone()
+
+    if row is None:
+        c.execute("""
+            INSERT INTO Settings (userID, max_percentage, monthly_budget_goal) 
+            VALUES (?, ?, ?)
+        """, (session['userID'], 30, 1000))
+        conn.commit()
+        max_pct = 30
+        monthly_budget_goal = 1000
+    else:
+        max_pct = row[0]
+        monthly_budget_goal = row[1] or 1
+
+    # Monthly expense progress
+    today = date.today()
+    first_day = today.replace(day=1)
+    first_day_str = first_day.isoformat()
+    c.execute("""
+        SELECT amount FROM Transactions 
+        WHERE date >= ? AND type='Expense' AND userID=?
+    """, (first_day_str, session['userID']))
+
+    rows = c.fetchall()
+    expenses_this_month = [row[0] for row in rows]
+    monthly_total = sum(expenses_this_month)
+
+    progress = (monthly_total / monthly_budget_goal) * 100 if monthly_budget_goal > 0 else 0
+
+    net_worth = total_income - total_expense
+
     conn.close()
-    return render_template('dashboard.html', data=data)
+
+    return render_template(
+        'dashboard.html',
+        data=data,
+        total_income=total_income,
+        total_expense=total_expense,
+        net_worth=net_worth,
+        percentages=percentages,
+        max_pct=max_pct,
+        progress=progress, 
+        monthly_budget_goal=monthly_budget_goal)
 
 # ADD 
-@app.route('/addNewData', methods=['GET','POST'])
+@app.route('/add', methods=['GET','POST'])
 @login_required
 def add():
     if request.method == 'POST':
         ttype = request.form['type']
         category = request.form['category']
         amount = float(request.form['amount'])
-
+        userID = session['userID']
         conn = sqlite3.connect("database.db")
         c = conn.cursor()
-        c.execute("INSERT INTO Transactions (type, category, amount, userID) VALUES (?, ?, ?, ?)",
-                  (ttype, category, amount, session['userID']))
+        today = date.today().isoformat()
+
+        c.execute("""
+            INSERT INTO Transactions (type, category, amount, date, userID)
+            VALUES (?, ?, ?, ?, ?)
+        """, (ttype, category, amount, today, userID))
+
         conn.commit()
         conn.close()
 
@@ -167,7 +250,7 @@ def add():
     return render_template('add.html')
 
 # EDIT 
-@app.route('/editdata/<int:id>', methods=['GET','POST']) # the var id is the transactionID of the row you are editing in the table
+@app.route('/edit/<int:id>', methods=['GET','POST']) # the var, id, is the transactionID of the row you are editing in the table
 @login_required
 def edit(id):
     conn = sqlite3.connect("database.db")
@@ -190,7 +273,7 @@ def edit(id):
     return render_template('edit.html', data=data)
 
 # SKBIDI DELETE
-@app.route('/deletedata/<int:id>')
+@app.route('/delete/<int:id>')
 @login_required
 def delete(id):
     conn = sqlite3.connect("database.db")
@@ -224,7 +307,7 @@ def upload():
     return render_template('upload.html')
 
 # VIEW THE EPTEIN FILES
-@app.route('/viewFile')
+@app.route('/viewFiles')
 @login_required
 def view_files():
     conn = sqlite3.connect("database.db")
@@ -233,6 +316,22 @@ def view_files():
     files = c.fetchall()
     conn.close()
     return render_template('view_files.html', files=files)
+
+# DELETE FILE
+@app.route('/delete_file/<filename>', methods=['POST'])
+@login_required
+def delete_file(filename):
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+    c.execute("DELETE FROM Files WHERE userID=? AND fileID=?", (session["userID"], fileID))
+    conn.commit()
+    conn.close()
+
+    return redirect(url_for('view_files'))
 
 # SERVE UPLOADED FILES
 @app.route('/uploads/<filename>')
@@ -298,7 +397,35 @@ def view_report():
 
     return send_file(pdf_buffer, as_attachment=False, download_name="report.pdf")
 
+# SETTINGs
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    userID = session['userID']
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
+
+    if request.method == 'POST':
+        new_max = float(request.form['max_percentage'])
+        monthly_budget_goal = float(request.form['monthly_budget_goal'])
+
+        c.execute("""
+            UPDATE Settings 
+            SET max_percentage=?, monthly_budget_goal=? 
+            WHERE userID=?
+        """, (new_max, monthly_budget_goal, userID))
+
+        conn.commit()
+        conn.close()
+        return redirect(url_for('dashboard'))
+
+    c.execute("SELECT max_percentage, monthly_budget_goal FROM Settings WHERE userID=?", (userID,))
+    row = c.fetchone()
+    conn.close()
+
+    return redirect(url_for('dashboard'))
 
 # RUN APP
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == '__main__': # name is a built in python var that is automatically set to the string "__main__" when its is run
+    app.run(debug=True) # but, if the file is imported as a module, __name__ will not be set to the files actual name, and thus will not run.
+# if an error occurs, debug displays a detailed traceback and an interactive console in your browser to help fix the issue 

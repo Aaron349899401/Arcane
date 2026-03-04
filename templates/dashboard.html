@@ -3,17 +3,41 @@
 <head>
     <title>Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </head>
 <body class="container mt-4">
 
-<nav class="mb-4">
-    <a href="/dashboard" class="btn btn-secondary">Home</a>
-    <a href="/addNewData" class="btn btn-success">Add</a>
-    <a href="/uploadFile" class="btn btn-info">Upload File</a>
-    <a href="/viewFile" class="btn btn-warning">View Files</a>
-    <a href="/viewReport" class="btn btn-dark">View Report</a>
-    <a href="/logout" class="btn btn-danger float-end">Logout</a>
-</nav> 
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 rounded">
+    <div class="container-fluid">
+
+        <div class="navbar-nav">
+            <a class="nav-link btn btn-success text-white me-2" href="/add">+ Add</a>
+            <a class="nav-link btn btn-info text-white me-2" href="/uploadFile">Upload File</a>
+            <a class="nav-link btn btn-warning text-white me-2" href="/viewFiles">View Files</a>
+            <a class="nav-link btn btn-dark text-white me-2" href="/viewReport">View Report</a>
+        </div>
+
+        <div class="d-flex">
+            <a class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#settingsModal">
+                <i class="bi bi-gear-fill"></i>
+            </a>
+            <a href="/logout" class="btn btn-danger">Logout</a>
+        </div>
+
+    </div>
+</nav>
+
+<h3>Monthly Budget Progress</h3>
+<div class="progress mb-3">
+  <div class="progress-bar 
+        {% if progress > 100 %}bg-danger
+        {% elif progress > 80 %}bg-warning
+        {% else %}bg-success
+        {% endif %}"
+        role="progressbar"style="width: {{ progress }}%;"> {{ progress|round(1) }}%
+    </div>
+</div>
 
 <h3>Income / Expense Table</h3>
 <table class="table table-bordered table-striped text-center">
@@ -32,15 +56,83 @@
             <td>{{ row[0] }}</td>
             <td>{{ row[1] }}</td>
             <td>{{ row[2] }}</td>
-            <td>${{ row[3] }}</td>
+            <td>${{ "{:,.2f}".format(row[3]) }}</td>
             <td>
-                <a href="/editdata/{{ row[0] }}" class="btn btn-sm btn-primary">Edit</a>
-                <a href="/deletedata/{{ row[0] }}" class="btn btn-sm btn-danger">Delete</a>
+                <a href="/edit/{{ row[0] }}" class="btn btn-sm btn-primary">Edit</a>
+                <a href="/delete/{{ row[0] }}" class="btn btn-sm btn-danger">Delete</a>
+            </td>
+        </tr>
+        {% endfor %}
+    
+    </tbody>
+    
+</table>
+<div class="mt-3 p-3 bg-light border rounded d-flex justify-content-between fw-bold">
+    <div>Total Income: ${{ "{:,.2f}".format(total_income) }}</div>
+    <div>Total Expenses: ${{ "{:,.2f}".format(total_expense) }}</div>
+    <div class="{% if net_worth >= 0 %}text-success{% else %}text-danger{% endif %}">
+        Net Worth: ${{ "{:,.2f}".format(net_worth) }}
+    </div>
+</div>
+<h3 class="mt-4">Expense Breakdown</h3>
+<table class="table table-bordered table-striped text-center">
+    <thead class="table-secondary table-dark">
+        <tr>
+            <th>Category</th>
+            <th>Amount</th>
+            <th>% of Total Expenses</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for category, amount, pct in percentages %}
+        <tr class="{% if pct > max_pct %}text-danger{% endif %}">
+            <td>{{ category }}</td>
+            <td>${{ "{:,.2f}".format(amount) }}</td>
+            <td>{{ "%.2f"|format(pct) }}%</td>
+            <td>
+                {% if pct > max_pct %}
+                ⚠ Over limit ({{max_pct}}%)
+                {% else %}
+                    ✅ 
+                {% endif %}
             </td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+<div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
 
+      <div class="modal-header">
+        <h5 class="modal-title">Settings</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <form action="/settings" method="POST">
+        <div class="modal-body">
+
+          <div class="mb-3">
+            <label class="form-label">Max Category Percentage</label>
+            <input type="number" class="form-control" name="max_percentage" value="{{ max_pct }}">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Monthly Budget Goal ($)</label>
+            <input type="number" class="form-control" name="monthly_budget_goal" value="{{ monthly_budget_goal }}">
+          </div>
+
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+</div>
 </body>
 </html>
