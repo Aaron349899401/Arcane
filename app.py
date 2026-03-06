@@ -4,14 +4,16 @@ import os
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # tells matplotlib to render images without needing a display
+# forces the matplotlib that uses a backend to draw images in memeory rather than by opening a window
 import matplotlib.pyplot as plt
 import numpy as np
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime, timedelta
+import time
 
 # looks for folders "templates"(HTML) and "static"(CSS) by default in the ARCANE folder
 # basically just creates a path to folders or files within its current directory (for security reasons)
@@ -22,7 +24,7 @@ app.secret_key = os.urandom(24) # the secret key signs your userID, and turns it
 UPLOAD_FOLDER = "uploads"
 # just makes a folder named "uploads" basically
 os.makedirs(UPLOAD_FOLDER, exist_ok=True) # exist_ok=True, means if the folder already exists, dont crash
-
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 # sets max file size to 5mb
 
 def init_db():
     conn = sqlite3.connect("database.db")
@@ -85,33 +87,73 @@ def login_required(func):
 
 
 # LOGIN
-@app.route('/', methods=['GET','POST']) # IF you dont define both and a user tries to submit somting, the server throws a 405 Method not allowed error
-def login():
+@app.route('/', methods=['GET','POST'])
+def login():  # IF you dont define both and a user tries to submit somting, the server throws a 405 Method not allowed error
     error = None
-    if request.method == 'POST':
-        # retrieves/fetchs the data they "POST"ed or submitted after clicking submit
-        # request.form is a dictionary containing POST form data
-        username = request.form['username'] 
-        password = request.form['password'] # In real world apps, you dont store passwords in real text, you use a hash via something like Werkzeug
-        conn = sqlite3.connect("database.db")
-        c = conn.cursor() # cursor object: what actually executes SQL commands
-        # compares the username and password from the submission with that of the database
-        c.execute("SELECT userID, password FROM Users WHERE username=?", (username,)) # SQLite returns rows as tuples by default
-        # gets the first matching userID from the query executed above; the ? are replaced by the tuple on the right using Flask (?=placeholder)
-        # the ? prevents SQL injection, if a hacker puts "admin" or "1"="1" as their username, it will always evaluate to True, the ? treats every inputs as plain text not commands
-        # there will only ever be one row, or none since usernames and passwords are all unique
-        user = c.fetchone() # user is either a tuple holding one userID or it is None (no username/password matches the POST in the database.db)
-        conn.close() # frees resources for other tasks
-
-        if user and check_password_hash(user[1], password): # checks if the user exists in the database/has an account
-            session['userID'] = user[0] # session is initiated via imports from Flask
-            # by nature the internet is stateless, meaning when you click a link to go to a diff page, the server completly forgets who you are, 
-            # session solves this by creating a key (stored as a cookie in their browser)
-            return redirect(url_for('dashboard'))
+    remaining = None
+    # l0ckout check
+    locked_out = False
+    if 'lockout_until' in session:
+        # If still locked out
+        if time.time() < session['lockout_until']:
+            locked_out = True
+            remaining = int(session['lockout_until'] - time.time())
         else:
-            error = "Incorrect Username or Password"
-            # if user == False, error is no longer None and is then returned/served down below
-    return render_template('login.html', error=error) # elif GET, serves the empty login form: safe, idempotent (API request that produces the same result regardless of how many times it is executed: deleting user 1 mutiple times)
+            # Lockout expired
+            session.pop('lockout_until', None)
+            session['login_attempts'] = 0
+
+    # If GET request, just render the page with lockout state
+    if request.method == 'GET':
+        return render_template('login.html', error=error, locked_out=locked_out, remaining=remaining)
+
+    # If user is locked out, block POST immediately
+    if locked_out:
+        error = f"Too many failed attempts. Try again in {remaining} seconds."
+        return render_template('login.html', error=error, locked_out=True, remaining=remaining)
+
+    # retrieves/fetchs the data they "POST"ed or submitted after clicking submit
+    # request.form is a dictionary containing POST form data
+    username = request.form['username']
+    password = request.form['password']  # In real world apps, you dont store passwords in real text, you use a hash via something like Werkzeug
+
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()  # cursor object: what actually executes SQL commands
+
+    # compares the username and password from the submission with that of the database
+    c.execute("SELECT userID, password FROM Users WHERE username=?", (username,))
+    # gets the first matching userID from the query executed above; the ? are replaced by the tuple on the right using Flask (?=placeholder)
+    # the ? prevents SQL injection, if a hacker puts "admin" or "1"="1" as their username, it will always evaluate to True, the ? treats every inputs as plain text not commands
+    # there will only ever be one row, or none since usernames and passwords are all unique
+    user = c.fetchone()  # user is either a tuple holding one userID or it is None (no username/password matches the POST in the database.db)
+    conn.close()  # frees resources for other tasks
+
+    # Initialize attempt counter if not present
+    if 'login_attempts' not in session:
+        session['login_attempts'] = 0
+
+    # Successful login
+    if user and check_password_hash(user[1], password):  # checks if the user exists in the database/has an account
+        session['userID'] = user[0]  # session is initiated via imports from Flask
+        # by nature the internet is stateless, meaning when you click a link to go to a diff page, the server completly forgets who you are,
+        # session solves this by creating a key (stored as a cookie in their browser)
+        session['login_attempts'] = 0
+        session.pop('lockout_until', None)
+        return redirect(url_for('dashboard'))
+    else:
+        # Failed login
+        session['login_attempts'] += 1
+
+        if session['login_attempts'] >= 4:
+            # Store lockout as a UNIX timestamp (Flask cannot store datetime objects)
+            session['lockout_until'] = (datetime.now() + timedelta(minutes=1)).timestamp()
+            remaining = int(session['lockout_until'] - time.time())
+            error = "Too many failed attempts. You are locked out for 1 minute."
+            locked_out = True
+        else:
+            error = "Incorrect username or password"
+
+    return render_template('login.html', error=error, locked_out=locked_out, remaining=remaining) # elif GET, serves the empty login form: safe, idempotent (API request that produces the same result regardless of how many times it is executed: deleting user 1 mutiple times)
     # if the error else blokc was activated, error will no longer be None, meaning the kwarg, error, will be displayed as "Incorrect U..."
 
 # REGISTER
@@ -306,10 +348,35 @@ def delete(id):
 @app.route('/uploadFile', methods=['GET','POST'])
 @login_required
 def upload():
+    ALLOWED_EXTENSIONS = {'txt', 'csv', 'pdf', 'jpg', 'jpeg'}
+
+    def allowed_file(filename):
+        return '.' in filename and \
+            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
     if request.method == 'POST':
         uploaded_files = request.files.getlist('file') # returns the files submitted by the user in session
         conn = sqlite3.connect("database.db")
         c = conn.cursor()
+        if 'file' not in request.files:
+            flash("No file part.", "danger")
+            return redirect(request.url)
+
+        file = request.files['file']
+
+        if file.filename == '':
+            flash("No selected file.", "danger")
+            return redirect(request.url)
+
+        if not allowed_file(file.filename):
+            flash("File type not allowed.", "danger")
+            return redirect(request.url)
+
+        filename = secure_filename(file.filename)
+        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+
+        flash("File uploaded successfully!", "success")
+        return redirect('/dashboard')
 
         for file in uploaded_files:
             if file:
@@ -376,16 +443,18 @@ def view_report():
     amounts = [d[1] for d in data]
 
     # BAR CHART
-    plt.figure() # creates a figure
+    plt.figure() # creates a figure object
     plt.bar(categories, amounts) # creates a bar graph
     plt.title("Monthly Expenses") # adds the title
-    bar_buffer = BytesIO()
+    bar_buffer = BytesIO() # creates a file stored in memory
     plt.savefig(bar_buffer, format='png')
-    plt.close()
-    bar_buffer.seek(0)
+    plt.close() # matplotlib has a global list of open figures, so we must close them
+    bar_buffer.seek(0) # all files have cursors, by default this cursor will be set to the end after .savefig() 
+    # .seek(0), just places the cursor to the bginning of the in-memory file
 
     # PIE CHART
     colors = plt.cm.tab20(np.linspace(0, 1, len(categories)))
+    # give me len(categories) evenly spaced integers between 0 and 1, each representing colors from the tab20 palette
     plt.figure()
     plt.pie(amounts, labels=categories, colors=colors, autopct="%1.1f%%")
     plt.title("Expense Breakdown")
