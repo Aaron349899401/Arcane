@@ -14,6 +14,7 @@ from reportlab.lib.units import inch
 from io import BytesIO
 from datetime import date, datetime, timedelta
 import time
+from functools import wraps
 
 # looks for folders "templates"(HTML) and "static"(CSS) by default in the ARCANE folder
 # basically just creates a path to folders or files within its current directory (for security reasons)
@@ -22,9 +23,15 @@ app.secret_key = os.urandom(24) # the secret key signs your userID, and turns it
 
 # Upload folder
 UPLOAD_FOLDER = "uploads"
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER 
+
+# Ensure the folder actually exists so the save doesn't fail
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
+
 # just makes a folder named "uploads" basically
-os.makedirs(UPLOAD_FOLDER, exist_ok=True) # exist_ok=True, means if the folder already exists, dont crash
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 # sets max file size to 5mb
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True) # exist_ok=True, means if the folder already exists, dont crash
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 # sets max file size to 5MB
 
 def init_db():
     conn = sqlite3.connect("database.db")
@@ -77,7 +84,6 @@ def init_db():
 init_db()
 
 def login_required(func):
-    from functools import wraps
     @wraps(func)
     def wrapper(*args, **kwargs):
         if 'userID' not in session:
@@ -88,10 +94,10 @@ def login_required(func):
 
 # LOGIN
 @app.route('/', methods=['GET','POST'])
-def login():  # IF you dont define both and a user tries to submit somting, the server throws a 405 Method not allowed error
+def login():  # IF you dont define both and a user tries to submit something, the server throws a 405 Method not allowed error
     error = None
     remaining = None
-    # l0ckout check
+    # lockout check
     locked_out = False
     if 'lockout_until' in session:
         # If still locked out
@@ -344,50 +350,52 @@ def delete(id):
     conn.close()
     return redirect(url_for('dashboard'))
 
-# UPLOAD THE EPSTEIN FILES
+# UPLOAD FILES
 @app.route('/uploadFile', methods=['GET','POST'])
 @login_required
 def upload():
-    ALLOWED_EXTENSIONS = {'txt', 'csv', 'pdf', 'jpg', 'jpeg'}
+    ALLOWED_EXTENSIONS = {'txt', 'csv', 'pdf', 'jpg', 'jpeg', 'png'}
 
     def allowed_file(filename):
         return '.' in filename and \
             filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
     if request.method == 'POST':
-        uploaded_files = request.files.getlist('file') # returns the files submitted by the user in session
-        conn = sqlite3.connect("database.db")
-        c = conn.cursor()
+        # returns the files submitted by the user in session
+        uploaded_files = request.files.getlist('file')
+
+        # If no file input exists at all
         if 'file' not in request.files:
             flash("No file part.", "danger")
             return redirect(request.url)
 
-        file = request.files['file']
-
-        if file.filename == '':
+        # If user submitted nothing
+        if len(uploaded_files) == 0 or uploaded_files[0].filename == '':
             flash("No selected file.", "danger")
             return redirect(request.url)
 
-        if not allowed_file(file.filename):
-            flash("File type not allowed.", "danger")
-            return redirect(request.url)
+        conn = sqlite3.connect("database.db")
+        c = conn.cursor()
 
-        filename = secure_filename(file.filename)
-        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-
-        flash("File uploaded successfully!", "success")
-        return redirect('/dashboard')
-
+        # Process each uploaded file
         for file in uploaded_files:
-            if file:
+            if file and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
-                file.save(os.path.join(UPLOAD_FOLDER, filename)) # saves the file in the uploads folder
-                c.execute("INSERT INTO Files (filename, userID) VALUES (?, ?)", (filename, session['userID']))
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+
+                # Save file info in DB
+                c.execute("INSERT INTO Files (filename, userID) VALUES (?, ?)",
+                          (filename, session['userID']))
+            else:
+                flash("One or more files had an invalid file type.", "danger")
+                conn.close()
+                return redirect(request.url)
 
         conn.commit()
         conn.close()
-        return redirect(url_for('view_files')) 
-        # after saving the files submitted by the user in the database and uploads folder, they are immediatly sent to view the files
+
+        flash("File(s) uploaded successfully!", "success")
+        return redirect(url_for('view_files'))
 
     return render_template('upload.html')
 

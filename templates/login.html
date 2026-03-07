@@ -7,16 +7,42 @@
 <body class="container mt-5">
     <div class="col-md-4 offset-md-4">
         <h2 class="text-center">Expense Tracker Login</h2>
+        
+        <!-- Main Error Message -->
         {% if error %}
         <div class="alert alert-danger text-center">{{ error }}</div>
         {% endif %}
+
         <form method="POST">
             {% if not locked_out %}
                 <input name="username" class="form-control mb-3" placeholder="Username" required>
                 <input name="password" type="password" class="form-control mb-3" placeholder="Password" required>
-                <button class="btn btn-primary w-100">Login</button>
+                <button type="submit" class="btn btn-primary w-100">Login</button>
+            {% else %}
+                <!-- Dynamic Countdown Alert -->
+                <div class="alert alert-warning text-center">
+                    <strong>Locked Out!</strong><br>
+                    Please wait <span id="countdown" class="fw-bold">{{ remaining }}</span> seconds.
+                </div>
+                
+                <script>
+                    let timeLeft = {{ remaining }};
+                    const countdownElement = document.getElementById('countdown');
+
+                    const timer = setInterval(() => {
+                        timeLeft--;
+                        if (timeLeft <= 0) {
+                            clearInterval(timer);
+                            // Automatically refresh to unlock the form
+                            window.location.reload(); 
+                        } else {
+                            countdownElement.innerText = timeLeft;
+                        }
+                    }, 1000);
+                </script>
             {% endif %}
-            <a href="/register" class="btn btn-link w-100">Create Account</a>
+            
+            <a href="/register" class="btn btn-link w-100 mt-2">Create Account</a>
         </form>
     </div>
 </body>
